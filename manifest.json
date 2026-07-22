@@ -1,0 +1,32 @@
+{
+  "name": "專業園藝 POS 系統",
+  "short_name": "園藝POS",
+  "description": "活體植物與園藝資材 POS 收銀系統",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f8fafc",
+  "theme_color": "#16a34a",
+  "lang": "zh-TW",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
