@@ -40,31 +40,42 @@
             return <i data-lucide={name} style={{ width: size, height: size }} className={className}></i>;
         };
 
+        const WHOLESALE_PRESETS = ['小翠', '維仁', '微風', '禾谷', '宏昇', '趙先生', '金燕', '微幸福', '心芽'];
+
+        // priceOverride: { retailPrice, specialPrice, isSpecial } — 本次結帳暫時取代該筆的訂價/特價/是否特價，其餘折扣規則不變
+        const getEffProduct = (item) => item.priceOverride
+            ? { ...item.product, retailPrice: item.priceOverride.retailPrice, specialPrice: item.priceOverride.specialPrice, isSpecial: item.priceOverride.isSpecial }
+            : item.product;
+
         const calculateTotals = (cart, tier) => {
             let plantSub = 0; let totalRet = 0;
             const processed = cart.map(item => {
-                const { product, quantity } = item;
+                const { quantity, priceOverride } = item;
+                const p = getEffProduct(item);
                 let unit = 0; let reason = '';
-                const curRet = product.retailPrice > 0 ? product.retailPrice : product.specialPrice;
+                const curRet = p.retailPrice > 0 ? p.retailPrice : p.specialPrice;
                 totalRet += curRet * quantity;
                 if (tier === CUSTOMER_TIERS.WHOLESALE) {
-                    unit = product.retailPrice > 0 ? Math.round(product.retailPrice * 0.6) : product.specialPrice;
+                    unit = p.retailPrice > 0 ? Math.round(p.retailPrice * 0.6) : p.specialPrice;
                     reason = '批商六折';
                 } else {
-                    if (product.isSpecial && product.specialPrice > 0) { unit = product.specialPrice; reason = '特價品'; }
+                    if (p.isSpecial && p.specialPrice > 0) { unit = p.specialPrice; reason = '特價品'; }
                     else {
-                        unit = product.retailPrice;
-                        if (product.category === '植物') plantSub += product.retailPrice * quantity;
-                        else if (product.category === '盆器') { unit = Math.round(product.retailPrice * 0.8); reason = '盆器八折'; }
+                        unit = p.retailPrice;
+                        if (p.category === '植物') plantSub += p.retailPrice * quantity;
+                        else if (p.category === '盆器') { unit = Math.round(p.retailPrice * 0.8); reason = '盆器八折'; }
                     }
                 }
+                if (priceOverride) reason = reason ? `${reason}・改價` : '改價';
                 return { ...item, unitPrice: unit, subtotal: Math.round(unit * quantity), discountReason: reason };
             });
             let mult = 1; if (tier === CUSTOMER_TIERS.RETAIL) { if (plantSub >= 5000) mult = 0.8; else if (plantSub >= 1000) mult = 0.9; }
             const finalCart = processed.map(item => {
-                if (tier === CUSTOMER_TIERS.RETAIL && item.product.category === '植物' && !item.product.isSpecial && mult < 1) {
-                    const finalU = Math.round(item.product.retailPrice * mult);
-                    return { ...item, unitPrice: finalU, subtotal: finalU * item.quantity, discountReason: mult === 0.8 ? '滿5000八折' : '滿1000九折' };
+                const p = getEffProduct(item);
+                if (tier === CUSTOMER_TIERS.RETAIL && p.category === '植物' && !p.isSpecial && mult < 1) {
+                    const finalU = Math.round(p.retailPrice * mult);
+                    const base = mult === 0.8 ? '滿5000八折' : '滿1000九折';
+                    return { ...item, unitPrice: finalU, subtotal: finalU * item.quantity, discountReason: item.priceOverride ? `${base}・改價` : base };
                 }
                 return item;
             });
@@ -73,14 +84,60 @@
         };
 
         // --- 視圖：POS 結帳 ---
-        const POSView = ({ products, productSections, currentSection, setCurrentSection, cart, finalTotal, totalDiscount, totalRetailPrice, addItemToCart, updateItemQuantity, clearCart, handleCheckout, customerTier, setCustomerTier, recentSales, onEditSale }) => {
+        const POSView = ({ products, productSections, currentSection, setCurrentSection, cart, finalTotal, totalDiscount, totalRetailPrice, addItemToCart, updateItemQuantity, clearCart, handleCheckout, customerTier, setCustomerTier, wholesalerName, setWholesalerName, recentSales, onEditSale }) => {
             const [searchTerm, setSearchTerm] = useState('');
+            const [showWholesaleModal, setShowWholesaleModal] = useState(false);
+            const [wholesaleInput, setWholesaleInput] = useState('');
+            const [priceModal, setPriceModal] = useState(null);
+            // priceModal 結構：
+            //  快速新增: { mode:'quickAdd', category, name, retail, special }
+            //  修改價格: { mode:'editPrice', product, qty, retail, special }
 
             const handleManualAdd = (e, product) => {
                 e.stopPropagation();
                 const qtyStr = window.prompt(`請輸入「${product.name}」要新增的數量：`, "1");
                 const qty = parseInt(qtyStr);
-                if (!isNaN(qty) && qty > 0) addItemToCart(product, qty);
+                if (isNaN(qty) || qty <= 0) return;
+                setPriceModal({
+                    mode: 'editPrice',
+                    product, qty,
+                    retail: product.retailPrice > 0 ? String(product.retailPrice) : '',
+                    special: product.specialPrice > 0 ? String(product.specialPrice) : ''
+                });
+            };
+
+            const openQuickAdd = (category) => {
+                setPriceModal({ mode: 'quickAdd', category, name: '', retail: '', special: '' });
+            };
+
+            const closePriceModal = () => setPriceModal(null);
+
+            const confirmPriceModal = () => {
+                const retail = Number(priceModal.retail) || 0;
+                const special = Number(priceModal.special) || 0;
+                if (retail <= 0 && special <= 0) { alert('請至少輸入「訂價」或「特價」其中一項'); return; }
+                if (priceModal.mode === 'quickAdd') {
+                    const cat = priceModal.category;
+                    const adhocProduct = {
+                        id: `adhoc-${Date.now()}`,
+                        name: priceModal.name.trim() || cat,
+                        category: cat, size: '',
+                        retailPrice: retail, specialPrice: special,
+                        cost: 0, isSpecial: cat === '特價品' || special > 0,
+                        section: currentSection || '快速項目'
+                    };
+                    addItemToCart(adhocProduct, 1);
+                } else {
+                    addItemToCart(priceModal.product, priceModal.qty, { retailPrice: retail, specialPrice: special, isSpecial: special > 0 });
+                }
+                setPriceModal(null);
+            };
+
+            const confirmWholesale = (name) => {
+                setWholesalerName(name);
+                setCustomerTier(CUSTOMER_TIERS.WHOLESALE);
+                setShowWholesaleModal(false);
+                setWholesaleInput('');
             };
 
             // 搜尋過濾邏輯：有輸入搜尋字時，跨所有分區搜尋；沒輸入時，僅顯示目前分區
@@ -99,9 +156,20 @@
                 <div className="flex flex-col lg:flex-row h-[calc(100vh-140px)] gap-4 animate-fadeIn text-slate-800 font-medium">
                     <div className="w-full lg:w-80 bg-white rounded-3xl shadow-sm border border-slate-200 flex flex-col overflow-hidden shrink-0">
                         <div className="p-3 border-b bg-slate-50/50">
-                            <select value={customerTier} onChange={(e) => setCustomerTier(e.target.value)} className="w-full p-2 bg-white border rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-green-500">
-                                {Object.values(CUSTOMER_TIERS).map(t => <option key={t} value={t}>{t}</option>)}
-                            </select>
+                            <div className="flex gap-1.5">
+                                <button
+                                    onClick={() => { setCustomerTier(CUSTOMER_TIERS.RETAIL); setWholesalerName(''); }}
+                                    className={`flex-1 py-2 rounded-xl text-xs font-black transition-all ${customerTier === CUSTOMER_TIERS.RETAIL ? 'bg-green-600 text-white shadow-sm' : 'bg-white border text-slate-500'}`}
+                                >
+                                    零售客戶
+                                </button>
+                                <button
+                                    onClick={() => setShowWholesaleModal(true)}
+                                    className={`flex-1 py-2 rounded-xl text-xs font-black transition-all truncate px-1 ${customerTier === CUSTOMER_TIERS.WHOLESALE ? 'bg-green-600 text-white shadow-sm' : 'bg-white border text-slate-500'}`}
+                                >
+                                    {customerTier === CUSTOMER_TIERS.WHOLESALE && wholesalerName ? `批商-${wholesalerName}` : '批商'}
+                                </button>
+                            </div>
                         </div>
                         <div className="flex-grow overflow-y-auto p-3 custom-scrollbar space-y-2">
                             {cart.length === 0 ? (
@@ -173,6 +241,21 @@
                         </div>
                         <div className="flex-grow overflow-y-auto custom-scrollbar pr-1 pb-10">
                             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-3">
+                                <button onClick={() => openQuickAdd('植物')} className="border-2 border-dashed border-green-300 bg-green-50/50 hover:bg-green-100 p-3 rounded-[1.25rem] transition-all flex flex-col items-center justify-center h-32 gap-1 text-green-600">
+                                    <Icon name="plus-circle" size={24} />
+                                    <span className="text-xs font-black">常賣植物</span>
+                                    <span className="text-[9px] text-green-500 opacity-70">快速新增</span>
+                                </button>
+                                <button onClick={() => openQuickAdd('盆器')} className="border-2 border-dashed border-blue-300 bg-blue-50/50 hover:bg-blue-100 p-3 rounded-[1.25rem] transition-all flex flex-col items-center justify-center h-32 gap-1 text-blue-600">
+                                    <Icon name="plus-circle" size={24} />
+                                    <span className="text-xs font-black">盆器資材</span>
+                                    <span className="text-[9px] text-blue-500 opacity-70">快速新增</span>
+                                </button>
+                                <button onClick={() => openQuickAdd('特價品')} className="border-2 border-dashed border-red-300 bg-red-50/50 hover:bg-red-100 p-3 rounded-[1.25rem] transition-all flex flex-col items-center justify-center h-32 gap-1 text-red-500">
+                                    <Icon name="plus-circle" size={24} />
+                                    <span className="text-xs font-black">特價品</span>
+                                    <span className="text-[9px] text-red-400 opacity-70">快速新增</span>
+                                </button>
                                 {filteredProducts.length === 0 && (
                                     <div className="col-span-full text-center py-20 text-slate-300 font-bold">
                                         <Icon name="search-x" size={48} className="mx-auto mb-2 opacity-20" />
@@ -204,6 +287,83 @@
                             </div>
                         </div>
                     </div>
+
+                    {showWholesaleModal && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4" onClick={() => setShowWholesaleModal(false)}>
+                            <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 animate-fadeIn" onClick={(e) => e.stopPropagation()}>
+                                <h3 className="text-lg font-black mb-4 text-slate-800">選擇批商</h3>
+                                <input
+                                    autoFocus
+                                    type="text"
+                                    placeholder="直接輸入批商名稱，按 Enter 確認"
+                                    value={wholesaleInput}
+                                    onChange={(e) => setWholesaleInput(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' && wholesaleInput.trim()) confirmWholesale(wholesaleInput.trim()); }}
+                                    className="w-full p-3 border rounded-xl mb-4 outline-none focus:ring-2 focus:ring-green-500 font-bold text-sm"
+                                />
+                                <div className="grid grid-cols-3 gap-2">
+                                    {WHOLESALE_PRESETS.map(name => (
+                                        <button key={name} onClick={() => confirmWholesale(name)} className="bg-slate-50 hover:bg-green-50 border border-slate-200 rounded-xl py-3 text-sm font-bold text-slate-700 transition-all">
+                                            {name}
+                                        </button>
+                                    ))}
+                                </div>
+                                <button onClick={() => setShowWholesaleModal(false)} className="mt-4 w-full py-2 text-slate-400 font-bold text-sm hover:text-slate-600">取消</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {priceModal && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4" onClick={closePriceModal}>
+                            <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full p-6 animate-fadeIn" onClick={(e) => e.stopPropagation()}>
+                                <h3 className="text-lg font-black mb-1 text-slate-800">
+                                    {priceModal.mode === 'quickAdd' ? `快速新增：${priceModal.category}` : `修改「${priceModal.product.name}」價格`}
+                                </h3>
+                                <p className="text-xs text-slate-400 mb-4">
+                                    {priceModal.mode === 'quickAdd' ? '名稱可留白，訂價/特價至少填一項' : '僅本次結帳暫時調整，不會更動產品資料'}
+                                </p>
+                                {priceModal.mode === 'quickAdd' && (
+                                    <div className="mb-3">
+                                        <label className="text-xs font-bold text-slate-500 mb-1 block">名稱（可留白）</label>
+                                        <input
+                                            autoFocus
+                                            type="text"
+                                            value={priceModal.name}
+                                            onChange={(e) => setPriceModal(m => ({ ...m, name: e.target.value }))}
+                                            placeholder={priceModal.category}
+                                            className="w-full p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-green-500 font-bold text-sm"
+                                        />
+                                    </div>
+                                )}
+                                <div className="grid grid-cols-2 gap-3 mb-5">
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-500 mb-1 block">訂價</label>
+                                        <input
+                                            type="number"
+                                            value={priceModal.retail}
+                                            onChange={(e) => setPriceModal(m => ({ ...m, retail: e.target.value }))}
+                                            placeholder="0"
+                                            className="w-full p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-green-500 font-bold text-sm"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-bold text-red-400 mb-1 block">特價（選填）</label>
+                                        <input
+                                            type="number"
+                                            value={priceModal.special}
+                                            onChange={(e) => setPriceModal(m => ({ ...m, special: e.target.value }))}
+                                            placeholder="0"
+                                            className="w-full p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-red-400 font-bold text-sm"
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button onClick={closePriceModal} className="flex-1 py-2.5 rounded-xl text-slate-500 font-bold text-sm bg-slate-100 hover:bg-slate-200">取消</button>
+                                    <button onClick={confirmPriceModal} className="flex-1 py-2.5 rounded-xl text-white font-bold text-sm bg-green-600 hover:bg-green-700">確定</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         };
@@ -446,6 +606,7 @@
             const [sales, setSales] = useState(() => JSON.parse(localStorage.getItem('pos-s-v19')) || []);
             const [cart, setCart] = useState([]);
             const [tier, setTier] = useState(CUSTOMER_TIERS.RETAIL);
+            const [wholesalerName, setWholesalerName] = useState('');
             const [sec, setSec] = useState('常賣植物');
             const [msg, setMsg] = useState('');
 
@@ -456,9 +617,12 @@
             const secs = useMemo(() => [...new Set(products.map(p => p.section).filter(Boolean))], [products]);
             const calc = useMemo(() => calculateTotals(cart, tier), [cart, tier]);
 
-            const addItem = (p, qty = 1) => setCart(prev => { 
-                const idx = prev.findIndex(x => x.product.id === p.id); 
-                if (idx > -1) { const n = [...prev]; n[idx].quantity += qty; return n; } 
+            const addItem = (p, qty = 1, priceOverride = null) => setCart(prev => {
+                if (priceOverride) {
+                    return [...prev, { product: p, quantity: qty, priceOverride }];
+                }
+                const idx = prev.findIndex(x => x.product.id === p.id && !x.priceOverride);
+                if (idx > -1) { const n = [...prev]; n[idx].quantity += qty; return n; }
                 return [...prev, { product: p, quantity: qty }];
             });
 
@@ -467,9 +631,15 @@
                 const target = sales.find(x => x.id === sid);
                 if (!target) return;
                 if (cart.length > 0 && !confirm('目前購物車已有東西，修正將會覆蓋它，確定嗎？')) return;
-                
-                setCart(target.cart.map(i => ({ product: i.product, quantity: i.quantity })));
-                setTier(target.customerTier);
+
+                setCart(target.cart.map(i => ({ product: i.product, quantity: i.quantity, priceOverride: i.priceOverride || null })));
+                if (target.customerTier.startsWith('批商-')) {
+                    setTier(CUSTOMER_TIERS.WHOLESALE);
+                    setWholesalerName(target.customerTier.replace('批商-', ''));
+                } else {
+                    setTier(CUSTOMER_TIERS.RETAIL);
+                    setWholesalerName('');
+                }
                 setSales(prev => prev.filter(x => x.id !== sid));
                 setView('POS');
                 setMsg('已載入修正模式');
@@ -491,7 +661,7 @@
                         </nav>
                     </header>
                     <main className="flex-grow p-4 overflow-hidden">
-                        {view === 'POS' && <POSView products={products} productSections={secs} currentSection={sec} setCurrentSection={setSec} cart={calc.cart} finalTotal={calc.finalTotal} totalDiscount={calc.totalDiscount} totalRetailPrice={calc.totalRetailPrice} addItemToCart={addItem} updateItemQuantity={(idx,q)=>setCart(prev=>q<=0?prev.filter((_,i)=>i!==idx):prev.map((it,i)=>i===idx?{...it,quantity:q}:it))} clearCart={()=>setCart([])} handleCheckout={()=>{ setSales(prev=>[...prev,{id:Date.now().toString(), cart:calc.cart, customerTier:tier, finalTotal:calc.finalTotal, timestamp:new Date()}]); setCart([]); setMsg('結帳完成！'); }} customerTier={tier} setCustomerTier={setTier} recentSales={sales} onEditSale={handleEditSale} />}
+                        {view === 'POS' && <POSView products={products} productSections={secs} currentSection={sec} setCurrentSection={setSec} cart={calc.cart} finalTotal={calc.finalTotal} totalDiscount={calc.totalDiscount} totalRetailPrice={calc.totalRetailPrice} addItemToCart={addItem} updateItemQuantity={(idx,q)=>setCart(prev=>q<=0?prev.filter((_,i)=>i!==idx):prev.map((it,i)=>i===idx?{...it,quantity:q}:it))} clearCart={()=>setCart([])} handleCheckout={()=>{ const label = tier === CUSTOMER_TIERS.WHOLESALE ? `批商-${wholesalerName || '未指定'}` : tier; setSales(prev=>[...prev,{id:Date.now().toString(), cart:calc.cart, customerTier:label, finalTotal:calc.finalTotal, timestamp:new Date()}]); setCart([]); setMsg('結帳完成！'); }} customerTier={tier} setCustomerTier={setTier} wholesalerName={wholesalerName} setWholesalerName={setWholesalerName} recentSales={sales} onEditSale={handleEditSale} />}
                         {view === 'Data' && <DataManagementView products={products} setProducts={setProducts} setMessage={setMsg} />}
                         {view === 'Stats' && <StatsView sales={sales} onClearSales={()=>{ if(confirm('確定清除？')){setSales([]); setMsg('已清空');} }} onEditSale={handleEditSale} />}
                     </main>
